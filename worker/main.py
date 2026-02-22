@@ -5,20 +5,40 @@ pour lancer le pipeline de recherche d'emploi automatisée.
 """
 
 import logging
+import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from agent_llm import CandidateProfile, process_offer
 from document_builder import fill_template, generate_cover_letter_docx
+from drive_client import list_files, read_text_file
+from notifier import notify_candidate
 from scraper import JobOffer
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent_rh")
 
 app = FastAPI(title="Agent RH Worker", version="0.1.0")
+
+# CORS pour permettre au frontend Vercel d'appeler le worker
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "https://agent-rh.vercel.app",
+        os.getenv("FRONTEND_URL", ""),
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------------------------------------------------------------------
 # Dossier de sortie pour les documents générés
@@ -109,27 +129,25 @@ MOCK_OFFERS: list[JobOffer] = [
     ),
 ]
 
-MOCK_COVER_LETTER = """\
-Madame, Monsieur,
 
-Votre offre de {job_title} chez {company} a immédiatement retenu mon attention. \
-Fort de plusieurs années d'expérience en développement logiciel, je suis convaincu \
-que mon profil correspond aux attentes de votre équipe.
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _load_achievements_from_drive() -> str:
+    """Tente de charger les réalisations du candidat depuis Google Drive."""
+    folder_id = os.getenv("DRIVE_FOLDER_ID", "")
+    if not folder_id:
+        return ""
 
-Au cours de ma carrière, j'ai eu l'opportunité de travailler sur des projets \
-ambitieux mêlant développement backend (Python, FastAPI), frontend (React, \
-TypeScript) et infrastructure cloud (AWS, Docker). J'ai notamment contribué à la \
-mise en place de pipelines CI/CD robustes et à l'amélioration des pratiques DevOps \
-au sein de mes équipes.
+    try:
+        files = list_files(folder_id)
+        for f in files:
+            if "achievement" in f["name"].lower() or "realisation" in f["name"].lower():
+                return read_text_file(f["id"])
+    except Exception:
+        logger.warning("Impossible de lire les achievements depuis Drive", exc_info=True)
 
-Ce qui me motive particulièrement dans cette opportunité, c'est la possibilité \
-de contribuer à un projet à fort impact tout en évoluant dans un environnement \
-technique stimulant. Je serais ravi d'échanger avec vous sur la valeur que je \
-pourrais apporter à {company}.
-
-Dans l'attente de votre retour, je vous prie d'agréer, Madame, Monsieur, \
-l'expression de mes salutations distinguées.\
-"""
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +165,12 @@ async def trigger_job_search(
 ) -> JobSearchResponse:
     """Déclenche le pipeline complet de recherche d'emploi.
 
-    Étapes orchestrées (mode mock pour le moment) :
-    1. Récupérer les offres (mockées).
-    2. Pour chaque offre : générer la cover letter en .docx.
-    3. Si un template CV est disponible, le remplir via fill_template.
-    4. Retourner le récapitulatif.
+    Étapes orchestrées :
+    1. Récupérer les offres (mockées pour le moment).
+    2. Charger les achievements depuis Google Drive.
+    3. Pour chaque offre : analyser avec le LLM, générer la cover letter.
+    4. Envoyer le rapport par email via Resend.
+    5. Retourner le récapitulatif.
     """
     if request is None:
         request = JobSearchRequest()
@@ -166,18 +185,44 @@ async def trigger_job_search(
     offers = MOCK_OFFERS
     logger.info("%d offres trouvées (mockées)", len(offers))
 
+    # -- Étape 2 : charger le profil candidat --
+    achievements = _load_achievements_from_drive()
+    candidate = CandidateProfile(
+        job_title=request.job_title,
+        skills=[s.strip() for s in request.job_title.split(",")],
+        linkedin_url="",
+        achievements=achievements or "Profil professionnel expérimenté",
+    )
+
     results: list[ProcessedOffer] = []
+    generated_files: list[Path] = []
 
     for i, offer in enumerate(offers):
-        # -- Étape 2 : score de pertinence simulé --
-        mock_score = round(0.9 - i * 0.15, 2)
+        # -- Étape 3 : analyse LLM --
+        llm_output = None
+        use_llm = bool(os.getenv("OPENAI_API_KEY"))
 
-        # -- Étape 3 : générer la cover letter --
-        cover_text = MOCK_COVER_LETTER.format(
-            job_title=offer.title,
-            company=offer.company,
-        )
+        if use_llm:
+            try:
+                llm_output = await process_offer(candidate, offer)
+            except Exception:
+                logger.warning("Erreur LLM pour %s, fallback mock", offer.company, exc_info=True)
 
+        if llm_output:
+            score = llm_output.relevance_score
+            cover_text = llm_output.cover_letter
+        else:
+            # Fallback mock
+            score = round(0.9 - i * 0.15, 2)
+            cover_text = (
+                f"Madame, Monsieur,\n\n"
+                f"Votre offre de {offer.title} chez {offer.company} a retenu "
+                f"mon attention. Fort de mon expérience, je suis convaincu que "
+                f"mon profil correspond à vos attentes.\n\n"
+                f"Cordialement"
+            )
+
+        # -- Étape 4 : générer la cover letter en .docx --
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_company = offer.company.replace(" ", "_").lower()
         cl_filename = f"cover_letter_{safe_company}_{timestamp}_{i}.docx"
@@ -190,6 +235,7 @@ async def trigger_job_search(
                 company_name=offer.company,
                 output_path=cl_path,
             )
+            generated_files.append(cl_path)
             logger.info("Cover letter générée : %s", cl_path)
         except Exception:
             logger.exception("Erreur génération cover letter pour %s", offer.company)
@@ -198,7 +244,7 @@ async def trigger_job_search(
                 detail=f"Erreur génération document pour {offer.company}",
             )
 
-        # -- Étape 4 : remplir le template CV si disponible --
+        # -- Étape 5 : remplir le template CV si disponible --
         cv_path_str: str | None = None
         cv_template = OUTPUT_DIR / "cv_template.docx"
         if cv_template.exists():
@@ -215,6 +261,7 @@ async def trigger_job_search(
                     output_path=cv_out,
                 )
                 cv_path_str = str(cv_out)
+                generated_files.append(cv_out)
                 logger.info("CV généré : %s", cv_out)
             except Exception:
                 logger.exception("Erreur remplissage CV pour %s", offer.company)
@@ -223,11 +270,27 @@ async def trigger_job_search(
             ProcessedOffer(
                 title=offer.title,
                 company=offer.company,
-                relevance_score=mock_score,
+                relevance_score=score,
                 cover_letter_path=str(cl_path),
                 cv_path=cv_path_str,
             ),
         )
+
+    # -- Étape 6 : envoyer le rapport par email --
+    if os.getenv("RESEND_API_KEY"):
+        offers_summary = [
+            {"title": r.title, "company": r.company, "score": str(r.relevance_score)}
+            for r in results
+        ]
+        try:
+            notify_candidate(
+                email=request.candidate_email,
+                offers_summary=offers_summary,
+                generated_files=generated_files,
+            )
+            logger.info("Rapport envoyé à %s", request.candidate_email)
+        except Exception:
+            logger.warning("Erreur envoi email", exc_info=True)
 
     logger.info("Pipeline terminé : %d offres traitées", len(results))
 
