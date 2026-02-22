@@ -104,6 +104,12 @@ def _load_achievements_from_drive() -> str:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+@app.get("/")
+async def root() -> dict[str, str]:
+    """Route racine — utilisée par Render comme health-check par défaut."""
+    return {"status": "ok", "service": "agent-rh-worker"}
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Health-check basique pour le monitoring."""
