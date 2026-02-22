@@ -19,7 +19,7 @@ from agent_llm import CandidateProfile, process_offer
 from document_builder import fill_template, generate_cover_letter_docx
 from drive_client import list_files, read_text_file
 from notifier import notify_candidate
-from scraper import JobOffer
+from scraper import JobOffer, search_offers
 
 load_dotenv()
 
@@ -181,9 +181,17 @@ async def trigger_job_search(
         request.location,
     )
 
-    # -- Étape 1 : récupérer les offres (mock) --
-    offers = MOCK_OFFERS
-    logger.info("%d offres trouvées (mockées)", len(offers))
+    # -- Étape 1 : récupérer les offres via scraping WttJ --
+    try:
+        offers = await search_offers(request.job_title, request.location)
+        logger.info("%d offres trouvées via scraping WttJ", len(offers))
+    except Exception:
+        logger.warning("Scraping échoué, utilisation des données mock", exc_info=True)
+        offers = MOCK_OFFERS
+
+    if not offers:
+        logger.warning("Aucune offre trouvée, fallback sur données mock")
+        offers = MOCK_OFFERS
 
     # -- Étape 2 : charger le profil candidat --
     achievements = _load_achievements_from_drive()
