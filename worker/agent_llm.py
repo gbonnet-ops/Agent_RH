@@ -30,6 +30,8 @@ class CandidateProfile:
     skills: list[str]
     linkedin_url: str
     achievements: str  # Texte brut lu depuis Google Drive
+    cv_text: str = ""  # CV complet en texte
+    cover_letter_example: str = ""  # Exemple de cover letter pour le style
 
 
 @dataclass
@@ -62,11 +64,13 @@ async def analyze_offer(
         "d'emploi par rapport au profil d'un candidat. "
         "Réponds UNIQUEMENT avec un nombre décimal entre 0.0 et 1.0."
     ))
+    cv_info = f"\n- CV :\n{profile.cv_text}" if profile.cv_text else ""
     human = HumanMessage(content=(
         f"## Profil candidat\n"
         f"- Poste recherché : {profile.job_title}\n"
         f"- Compétences : {', '.join(profile.skills)}\n"
-        f"- Réalisations : {profile.achievements}\n\n"
+        f"- Réalisations : {profile.achievements}\n"
+        f"{cv_info}\n\n"
         f"## Offre d'emploi\n"
         f"- Titre : {offer.title}\n"
         f"- Entreprise : {offer.company}\n"
@@ -90,6 +94,28 @@ async def generate_cover_letter(
     """Rédige une lettre de motivation personnalisée."""
     llm = _get_llm()
 
+    # Construire le bloc exemple si fourni
+    example_block = ""
+    if profile.cover_letter_example:
+        example_block = (
+            "\n\n## EXEMPLE DE STYLE À REPRODUIRE\n"
+            "Voici une lettre de motivation du candidat qui montre son style "
+            "d'écriture. Tu DOIS reproduire ce ton, cette structure et ce "
+            "niveau de langue. Adapte le contenu à l'offre ciblée, mais "
+            "garde le même style :\n\n"
+            f"---\n{profile.cover_letter_example}\n---\n"
+        )
+
+    # Construire le bloc CV si fourni
+    cv_block = ""
+    if profile.cv_text:
+        cv_block = (
+            f"\n\n## CV COMPLET DU CANDIDAT\n"
+            f"Utilise ces informations concrètes (expériences, chiffres, "
+            f"résultats, entreprises) pour personnaliser la lettre :\n\n"
+            f"{profile.cv_text}\n"
+        )
+
     system = SystemMessage(content=(
         "Tu es un coach carrière senior spécialisé dans la rédaction de "
         "candidatures percutantes en français.\n\n"
@@ -97,33 +123,40 @@ async def generate_cover_letter(
         "1. ACCROCHE (2 phrases max) : Mentionne le nom de l'entreprise et "
         "pourquoi elle t'attire spécifiquement (culture, produit, mission). "
         "Déduis-le de la description de poste.\n"
-        "2. VALEUR AJOUTÉE (1 paragraphe) : Relie 2-3 compétences du candidat "
-        "aux besoins concrets du poste. Utilise les réalisations pour donner "
-        "des exemples chiffrés ou concrets.\n"
+        "2. VALEUR AJOUTÉE (1-2 paragraphes) : Relie les expériences et "
+        "compétences concrètes du CV aux besoins du poste. Cite des chiffres, "
+        "des projets réels, des résultats mesurables tirés du CV.\n"
         "3. MOTIVATION (2-3 phrases) : Explique ce que le candidat apportera "
         "à l'équipe, pas juste ce qu'il veut.\n"
         "4. CONCLUSION : Appel à l'action naturel.\n\n"
         "Style :\n"
+        "- Si un EXEMPLE DE STYLE est fourni, reproduis fidèlement le ton, "
+        "la structure et le niveau de langue de cet exemple.\n"
         "- Ton professionnel mais humain (pas de jargon creux type "
-        "'fort de mon expérience', 'dynamique et motivé')\n"
-        "- Maximum 250 mots\n"
+        "'fort de mon expérience', 'dynamique et motivé', "
+        "'passionné', 'force de proposition')\n"
+        "- Maximum 300 mots\n"
         "- Personnalise au maximum : cite le nom de l'entreprise, le poste exact, "
-        "la stack technique si pertinent\n"
-        "- JAMAIS de phrases génériques utilisables pour n'importe quelle entreprise\n\n"
+        "des éléments concrets du CV du candidat\n"
+        "- JAMAIS de phrases génériques utilisables pour n'importe quelle entreprise\n"
+        "- Utilise des données concrètes du CV : noms d'entreprises, chiffres, projets\n\n"
         "Format : Commence par 'Madame, Monsieur,' et termine par 'Cordialement,'. "
         "Pas d'en-tête, pas de date, pas de signature."
+        + example_block
     ))
     human = HumanMessage(content=(
         f"## Profil du candidat\n"
         f"- Poste recherché : {profile.job_title}\n"
         f"- Compétences techniques : {', '.join(profile.skills)}\n"
-        f"- Réalisations et expérience :\n{profile.achievements}\n\n"
+        f"- Réalisations et expérience :\n{profile.achievements}\n"
+        f"{cv_block}\n"
         f"## Offre ciblée\n"
         f"- Poste : {offer.title}\n"
         f"- Entreprise : {offer.company}\n"
         f"- Description complète de l'offre :\n{offer.description}\n\n"
         f"Rédige une lettre de motivation unique et spécifique à cette offre. "
-        f"Chaque phrase doit montrer que le candidat a lu et compris l'offre :"
+        f"Chaque phrase doit montrer que le candidat a lu et compris l'offre. "
+        f"Utilise des éléments concrets du CV pour appuyer chaque argument :"
     ))
 
     response = await llm.ainvoke([system, human])

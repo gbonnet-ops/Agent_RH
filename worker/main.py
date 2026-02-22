@@ -77,6 +77,8 @@ class JobSearchRequest(BaseModel):
     candidate_email: str = "jean.dupont@example.com"
     skills: list[str] = []
     linkedin_url: str = ""
+    cv_text: str = ""
+    cover_letter_example: str = ""
 
 
 class ProcessedOffer(BaseModel):
@@ -84,6 +86,7 @@ class ProcessedOffer(BaseModel):
 
     title: str
     company: str
+    url: str = ""
     relevance_score: float
     cover_letter_path: str
     cv_path: str | None = None
@@ -194,6 +197,8 @@ async def trigger_job_search(
         skills=skills,
         linkedin_url=request.linkedin_url,
         achievements=achievements or "Profil professionnel expérimenté",
+        cv_text=request.cv_text,
+        cover_letter_example=request.cover_letter_example,
     )
 
     results: list[ProcessedOffer] = []
@@ -272,6 +277,7 @@ async def trigger_job_search(
             ProcessedOffer(
                 title=offer.title,
                 company=offer.company,
+                url=offer.url,
                 relevance_score=score,
                 cover_letter_path=str(cl_path),
                 cv_path=cv_path_str,
