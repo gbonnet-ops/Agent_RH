@@ -6,6 +6,24 @@ interface CandidateProfile {
   jobTitle: string;
   skills: string;
   linkedinUrl: string;
+  candidateName: string;
+  candidateEmail: string;
+  location: string;
+}
+
+interface ProcessedOffer {
+  title: string;
+  company: string;
+  relevance_score: number;
+  cover_letter_path: string;
+  cv_path: string | null;
+}
+
+interface JobSearchResponse {
+  status: string;
+  processed_at: string;
+  offers_count: number;
+  results: ProcessedOffer[];
 }
 
 export default function Home() {
@@ -13,15 +31,47 @@ export default function Home() {
     jobTitle: "",
     skills: "",
     linkedinUrl: "",
+    candidateName: "",
+    candidateEmail: "",
+    location: "Paris",
   });
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<JobSearchResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    // TODO: persist to Vercel KV or API route
-    console.log("Profile saved:", profile);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
+    setLoading(true);
+    setError(null);
+    setResults(null);
+
+    try {
+      const res = await fetch("/api/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          job_title: profile.jobTitle,
+          location: profile.location,
+          candidate_name: profile.candidateName,
+          candidate_email: profile.candidateEmail,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Erreur serveur");
+      }
+
+      const data: JobSearchResponse = await res.json();
+      setResults(data);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur inconnue");
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -35,21 +85,73 @@ export default function Home() {
         </p>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-5">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Titre du poste recherché
-            </span>
-            <input
-              type="text"
-              required
-              placeholder="ex: Développeur Full-Stack Senior"
-              value={profile.jobTitle}
-              onChange={(e) =>
-                setProfile({ ...profile, jobTitle: e.target.value })
-              }
-              className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
-            />
-          </label>
+          <div className="grid grid-cols-2 gap-4">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Nom complet
+              </span>
+              <input
+                type="text"
+                required
+                placeholder="Jean Dupont"
+                value={profile.candidateName}
+                onChange={(e) =>
+                  setProfile({ ...profile, candidateName: e.target.value })
+                }
+                className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Email
+              </span>
+              <input
+                type="email"
+                required
+                placeholder="jean@exemple.com"
+                value={profile.candidateEmail}
+                onChange={(e) =>
+                  setProfile({ ...profile, candidateEmail: e.target.value })
+                }
+                className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
+              />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Poste recherché
+              </span>
+              <input
+                type="text"
+                required
+                placeholder="Développeur Full-Stack"
+                value={profile.jobTitle}
+                onChange={(e) =>
+                  setProfile({ ...profile, jobTitle: e.target.value })
+                }
+                className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Localisation
+              </span>
+              <input
+                type="text"
+                required
+                placeholder="Paris"
+                value={profile.location}
+                onChange={(e) =>
+                  setProfile({ ...profile, location: e.target.value })
+                }
+                className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
+              />
+            </label>
+          </div>
 
           <label className="flex flex-col gap-1.5">
             <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
@@ -85,17 +187,54 @@ export default function Home() {
 
           <button
             type="submit"
-            className="mt-2 rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+            disabled={loading}
+            className="mt-2 rounded-lg bg-zinc-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
           >
-            Sauvegarder
+            {loading ? "Recherche en cours..." : "Lancer la recherche"}
           </button>
 
           {saved && (
             <p className="text-center text-sm text-green-600 dark:text-green-400">
-              Profil sauvegardé avec succès.
+              Recherche terminée avec succès.
+            </p>
+          )}
+
+          {error && (
+            <p className="text-center text-sm text-red-600 dark:text-red-400">
+              {error}
             </p>
           )}
         </form>
+
+        {results && (
+          <div className="mt-8 border-t border-zinc-200 pt-6 dark:border-zinc-700">
+            <h2 className="mb-4 text-lg font-semibold text-zinc-900 dark:text-zinc-50">
+              {results.offers_count} offre{results.offers_count > 1 ? "s" : ""} trouvée{results.offers_count > 1 ? "s" : ""}
+            </h2>
+            <div className="flex flex-col gap-3">
+              {results.results.map((offer, i) => (
+                <div
+                  key={i}
+                  className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                        {offer.title}
+                      </p>
+                      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                        {offer.company}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-800 dark:bg-green-900 dark:text-green-200">
+                      {Math.round(offer.relevance_score * 100)}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
