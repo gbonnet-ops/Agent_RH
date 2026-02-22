@@ -34,6 +34,7 @@ async def startup_event() -> None:
     """Log au démarrage pour confirmer que le service est opérationnel."""
     logger.info("Agent RH Worker démarré sur le port %s", os.getenv("PORT", "10000"))
 
+
 # CORS pour permettre au frontend Vercel d'appeler le worker
 app.add_middleware(
     CORSMiddleware,
@@ -45,6 +46,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Middleware pour logger les requêtes entrantes
+@app.middleware("http")
+async def log_requests(request, call_next):
+    """Log toute requête entrante pour débugger."""
+    logger.info(f"→ {request.method} {request.url.path}")
+    response = await call_next(request)
+    logger.info(f"← {response.status_code} {request.url.path}")
+    return response
 
 # ---------------------------------------------------------------------------
 # Dossier de sortie pour les documents générés
