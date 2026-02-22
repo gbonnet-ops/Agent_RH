@@ -19,7 +19,7 @@ from agent_llm import CandidateProfile, process_offer
 from document_builder import fill_template, generate_cover_letter_docx
 from drive_client import list_files, read_text_file
 from notifier import notify_candidate
-from scraper import JobOffer
+from scraper import JobOffer, search_offers
 
 load_dotenv()
 
@@ -57,6 +57,8 @@ class JobSearchRequest(BaseModel):
     location: str = "Paris"
     candidate_name: str = "Jean Dupont"
     candidate_email: str = "jean.dupont@example.com"
+    skills: list[str] = []
+    linkedin_url: str = ""
 
 
 class ProcessedOffer(BaseModel):
@@ -77,57 +79,6 @@ class JobSearchResponse(BaseModel):
     offers_count: int
     results: list[ProcessedOffer]
 
-
-# ---------------------------------------------------------------------------
-# Données mockées pour tester le pipeline sans scraping réel
-# ---------------------------------------------------------------------------
-MOCK_OFFERS: list[JobOffer] = [
-    JobOffer(
-        title="Développeur Full-Stack Python/React",
-        company="TechStartup SAS",
-        url="https://www.welcometothejungle.com/fr/companies/techstartup/jobs/dev-fullstack",
-        description=(
-            "Nous recherchons un développeur Full-Stack pour rejoindre notre "
-            "équipe produit. Vous travaillerez sur notre plateforme SaaS B2B "
-            "avec une stack Python (FastAPI) / React / PostgreSQL / AWS. "
-            "Expérience requise : 5 ans minimum, maîtrise de CI/CD, "
-            "sensibilité UX."
-        ),
-        funnel_questions=[
-            "Pourquoi souhaitez-vous rejoindre TechStartup ?",
-            "Décrivez un projet technique dont vous êtes fier.",
-        ],
-    ),
-    JobOffer(
-        title="Lead Developer Python",
-        company="DataCorp",
-        url="https://www.welcometothejungle.com/fr/companies/datacorp/jobs/lead-dev",
-        description=(
-            "DataCorp recrute un Lead Developer Python pour piloter une "
-            "équipe de 4 développeurs. Mission : refonte de notre pipeline "
-            "data (Airflow, dbt, BigQuery) et développement d'APIs internes. "
-            "Poste basé à Paris, 3j de télétravail."
-        ),
-        funnel_questions=[
-            "Quelle est votre expérience en management d'équipe technique ?",
-        ],
-    ),
-    JobOffer(
-        title="Ingénieur MLOps",
-        company="AI Factory",
-        url="https://www.welcometothejungle.com/fr/companies/aifactory/jobs/mlops",
-        description=(
-            "Rejoignez AI Factory en tant qu'Ingénieur MLOps. Vous mettrez "
-            "en production des modèles ML, gérerez l'infra Kubernetes, et "
-            "développerez les pipelines de feature engineering. "
-            "Stack : Python, Docker, K8s, MLflow, Terraform."
-        ),
-        funnel_questions=[
-            "Avez-vous déjà déployé un modèle ML en production ?",
-            "Quelle est votre expérience avec Kubernetes ?",
-        ],
-    ),
-]
 
 
 # ---------------------------------------------------------------------------
@@ -181,16 +132,30 @@ async def trigger_job_search(
         request.location,
     )
 
-    # -- Étape 1 : récupérer les offres (mock) --
-    offers = MOCK_OFFERS
-    logger.info("%d offres trouvées (mockées)", len(offers))
+    # -- Étape 1 : récupérer les offres via scraping WttJ --
+    try:
+        offers = await search_offers(request.job_title, request.location)
+        logger.info("%d offres trouvées via scraping WttJ", len(offers))
+    except Exception:
+        logger.exception("Scraping WttJ échoué")
+        raise HTTPException(
+            status_code=502,
+            detail="Le scraping Welcome to the Jungle a échoué. Vérifiez que Playwright est installé (playwright install chromium --with-deps).",
+        )
+
+    if not offers:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Aucune offre trouvée pour '{request.job_title}' à '{request.location}'. Essayez avec des termes différents.",
+        )
 
     # -- Étape 2 : charger le profil candidat --
     achievements = _load_achievements_from_drive()
+    skills = request.skills if request.skills else [s.strip() for s in request.job_title.split(",")]
     candidate = CandidateProfile(
         job_title=request.job_title,
-        skills=[s.strip() for s in request.job_title.split(",")],
-        linkedin_url="",
+        skills=skills,
+        linkedin_url=request.linkedin_url,
         achievements=achievements or "Profil professionnel expérimenté",
     )
 
