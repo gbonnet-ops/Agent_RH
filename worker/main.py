@@ -28,6 +28,12 @@ logger = logging.getLogger("agent_rh")
 
 app = FastAPI(title="Agent RH Worker", version="0.1.0")
 
+
+@app.on_event("startup")
+async def startup_event() -> None:
+    """Log au démarrage pour confirmer que le service est opérationnel."""
+    logger.info("Agent RH Worker démarré sur le port %s", os.getenv("PORT", "10000"))
+
 # CORS pour permettre au frontend Vercel d'appeler le worker
 app.add_middleware(
     CORSMiddleware,
