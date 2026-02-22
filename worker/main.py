@@ -19,6 +19,7 @@ from agent_llm import CandidateProfile, process_offer
 from document_builder import fill_template, generate_cover_letter_docx
 from drive_client import list_files, read_text_file
 from notifier import notify_candidate
+from job_search_api import search_offers_adzuna
 from scraper import JobOffer, search_offers
 
 load_dotenv()
@@ -34,6 +35,7 @@ async def startup_event() -> None:
     """Log au démarrage pour confirmer que le service est opérationnel."""
     logger.info("Agent RH Worker démarré sur le port %s", os.getenv("PORT", "10000"))
 
+
 # CORS pour permettre au frontend Vercel d'appeler le worker
 app.add_middleware(
     CORSMiddleware,
@@ -45,6 +47,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Middleware pour logger les requêtes entrantes
+@app.middleware("http")
+async def log_requests(request, call_next):
+    """Log toute requête entrante pour débugger."""
+    logger.info(f"→ {request.method} {request.url.path}")
+    response = await call_next(request)
+    logger.info(f"← {response.status_code} {request.url.path}")
+    return response
 
 # ---------------------------------------------------------------------------
 # Dossier de sortie pour les documents générés
@@ -65,6 +77,8 @@ class JobSearchRequest(BaseModel):
     candidate_email: str = "jean.dupont@example.com"
     skills: list[str] = []
     linkedin_url: str = ""
+    cv_text: str = ""
+    cover_letter_example: str = ""
 
 
 class ProcessedOffer(BaseModel):
@@ -72,6 +86,7 @@ class ProcessedOffer(BaseModel):
 
     title: str
     company: str
+    url: str = ""
     relevance_score: float
     cover_letter_path: str
     cv_path: str | None = None
@@ -144,21 +159,34 @@ async def trigger_job_search(
         request.location,
     )
 
-    # -- Étape 1 : récupérer les offres via scraping WttJ --
+    # -- Étape 1 : récupérer les offres --
+    # Stratégie : Adzuna API d'abord (fiable), puis WttJ scraping en fallback
+    offers: list[JobOffer] = []
+
+    # Tentative 1 : API Adzuna (rapide, pas de scraping)
     try:
-        offers = await search_offers(request.job_title, request.location)
-        logger.info("%d offres trouvées via scraping WttJ", len(offers))
+        offers = await search_offers_adzuna(request.job_title, request.location)
+        if offers:
+            logger.info("%d offres trouvées via Adzuna API", len(offers))
     except Exception:
-        logger.exception("Scraping WttJ échoué")
-        raise HTTPException(
-            status_code=502,
-            detail="Le scraping Welcome to the Jungle a échoué. Vérifiez que Playwright est installé (playwright install chromium --with-deps).",
-        )
+        logger.warning("Adzuna API échouée, fallback vers WttJ", exc_info=True)
+
+    # Tentative 2 : scraping WttJ si Adzuna n'a rien trouvé
+    if not offers:
+        try:
+            offers = await search_offers(request.job_title, request.location)
+            logger.info("%d offres trouvées via scraping WttJ", len(offers))
+        except Exception:
+            logger.exception("Scraping WttJ échoué également")
 
     if not offers:
         raise HTTPException(
             status_code=404,
-            detail=f"Aucune offre trouvée pour '{request.job_title}' à '{request.location}'. Essayez avec des termes différents.",
+            detail=(
+                f"Aucune offre trouvée pour '{request.job_title}' à '{request.location}'. "
+                "Vérifiez que ADZUNA_APP_ID/ADZUNA_APP_KEY sont configurés, "
+                "ou essayez avec des termes différents."
+            ),
         )
 
     # -- Étape 2 : charger le profil candidat --
@@ -169,6 +197,8 @@ async def trigger_job_search(
         skills=skills,
         linkedin_url=request.linkedin_url,
         achievements=achievements or "Profil professionnel expérimenté",
+        cv_text=request.cv_text,
+        cover_letter_example=request.cover_letter_example,
     )
 
     results: list[ProcessedOffer] = []
@@ -247,6 +277,7 @@ async def trigger_job_search(
             ProcessedOffer(
                 title=offer.title,
                 company=offer.company,
+                url=offer.url,
                 relevance_score=score,
                 cover_letter_path=str(cl_path),
                 cv_path=cv_path_str,

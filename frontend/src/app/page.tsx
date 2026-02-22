@@ -9,11 +9,14 @@ interface CandidateProfile {
   candidateName: string;
   candidateEmail: string;
   location: string;
+  cvText: string;
+  coverLetterExample: string;
 }
 
 interface ProcessedOffer {
   title: string;
   company: string;
+  url: string;
   relevance_score: number;
   cover_letter_path: string;
   cv_path: string | null;
@@ -34,6 +37,8 @@ export default function Home() {
     candidateName: "",
     candidateEmail: "",
     location: "Paris",
+    cvText: "",
+    coverLetterExample: "",
   });
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<JobSearchResponse | null>(null);
@@ -57,6 +62,8 @@ export default function Home() {
           candidate_email: profile.candidateEmail,
           skills: profile.skills.split(",").map((s: string) => s.trim()).filter(Boolean),
           linkedin_url: profile.linkedinUrl,
+          cv_text: profile.cvText,
+          cover_letter_example: profile.coverLetterExample,
         }),
       });
 
@@ -187,6 +194,36 @@ export default function Home() {
             />
           </label>
 
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Votre CV (copier-coller le texte)
+            </span>
+            <textarea
+              rows={6}
+              placeholder="Collez ici le contenu de votre CV : expériences, formations, réalisations..."
+              value={profile.cvText}
+              onChange={(e) =>
+                setProfile({ ...profile, cvText: e.target.value })
+              }
+              className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+              Exemple de lettre de motivation (pour le style)
+            </span>
+            <textarea
+              rows={6}
+              placeholder="Collez ici un exemple de cover letter dont vous aimez le style. Le modèle reproduira ce ton."
+              value={profile.coverLetterExample}
+              onChange={(e) =>
+                setProfile({ ...profile, coverLetterExample: e.target.value })
+              }
+              className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-200 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:focus:border-zinc-500 dark:focus:ring-zinc-700"
+            />
+          </label>
+
           <button
             type="submit"
             disabled={loading}
@@ -232,6 +269,16 @@ export default function Home() {
                       {Math.round(offer.relevance_score * 100)}%
                     </span>
                   </div>
+                  {offer.url && (
+                    <a
+                      href={offer.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2 inline-block text-sm font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400 dark:hover:text-blue-300"
+                    >
+                      Postuler &rarr;
+                    </a>
+                  )}
                 </div>
               ))}
             </div>

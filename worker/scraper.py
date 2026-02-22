@@ -133,9 +133,29 @@ async def search_offers(
             await page.wait_for_timeout(3000)
 
             search_html = await page.content()
+            # Debug : log la taille du HTML et les premiers caractères
+            logger.info(
+                "HTML reçu : %d caractères, titre page : %s",
+                len(search_html),
+                BeautifulSoup(search_html, "html.parser").title.string
+                if BeautifulSoup(search_html, "html.parser").title
+                else "pas de titre",
+            )
             soup = BeautifulSoup(search_html, "html.parser")
-            offers = _parse_search_results(soup, max_results)
 
+            # Debug : compter les liens qui matchent le pattern WttJ
+            all_links = soup.find_all("a", href=True)
+            job_links = [
+                a for a in all_links
+                if "/companies/" in a["href"] and "/jobs/" in a["href"]
+            ]
+            logger.info(
+                "Debug parsing : %d liens totaux, %d liens offres WttJ",
+                len(all_links),
+                len(job_links),
+            )
+
+            offers = _parse_search_results(soup, max_results)
             logger.info("%d offres trouvées dans les résultats", len(offers))
 
             # Scraper les détails de chaque offre (même browser)
