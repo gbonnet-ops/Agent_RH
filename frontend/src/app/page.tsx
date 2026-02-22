@@ -55,6 +55,8 @@ export default function Home() {
           location: profile.location,
           candidate_name: profile.candidateName,
           candidate_email: profile.candidateEmail,
+          skills: profile.skills.split(",").map((s: string) => s.trim()).filter(Boolean),
+          linkedin_url: profile.linkedinUrl,
         }),
       });
 
