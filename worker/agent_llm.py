@@ -32,6 +32,7 @@ class CandidateProfile:
     achievements: str  # Texte brut lu depuis Google Drive
     cv_text: str = ""  # CV complet en texte
     cover_letter_example: str = ""  # Exemple de cover letter pour le style
+    years_experience: int = 0  # Années d'expérience professionnelle
 
 
 @dataclass
@@ -65,11 +66,13 @@ async def analyze_offer(
         "Réponds UNIQUEMENT avec un nombre décimal entre 0.0 et 1.0."
     ))
     cv_info = f"\n- CV :\n{profile.cv_text}" if profile.cv_text else ""
+    xp_info = f"\n- Années d'expérience : {profile.years_experience}" if profile.years_experience else ""
     human = HumanMessage(content=(
         f"## Profil candidat\n"
         f"- Poste recherché : {profile.job_title}\n"
         f"- Compétences : {', '.join(profile.skills)}\n"
         f"- Réalisations : {profile.achievements}\n"
+        f"{xp_info}"
         f"{cv_info}\n\n"
         f"## Offre d'emploi\n"
         f"- Titre : {offer.title}\n"
@@ -144,10 +147,17 @@ async def generate_cover_letter(
         "Pas d'en-tête, pas de date, pas de signature."
         + example_block
     ))
+    xp_block = (
+        f"\n- Années d'expérience : {profile.years_experience} ans\n"
+        if profile.years_experience
+        else ""
+    )
+
     human = HumanMessage(content=(
         f"## Profil du candidat\n"
         f"- Poste recherché : {profile.job_title}\n"
         f"- Compétences techniques : {', '.join(profile.skills)}\n"
+        f"{xp_block}"
         f"- Réalisations et expérience :\n{profile.achievements}\n"
         f"{cv_block}\n"
         f"## Offre ciblée\n"

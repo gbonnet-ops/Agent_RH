@@ -13,6 +13,7 @@ interface CandidateProfile {
   candidateName: string;
   candidateEmail: string;
   location: string;
+  yearsExperience: number;
   cvText: string;
   coverLetterExample: string;
 }
@@ -120,6 +121,7 @@ export default function Home() {
     candidateName: "",
     candidateEmail: "",
     location: "Paris",
+    yearsExperience: 0,
     cvText: "",
     coverLetterExample: "",
   });
@@ -303,6 +305,7 @@ export default function Home() {
           linkedin_url: profile.linkedinUrl,
           cv_text: profile.cvText,
           cover_letter_example: profile.coverLetterExample,
+          years_experience: profile.yearsExperience,
           selected_offers: selectedOffers,
           min_score: minScore,
         }),
@@ -508,6 +511,27 @@ export default function Home() {
                 />
               </label>
             </div>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                Années d&apos;expérience
+              </span>
+              <input
+                type="number"
+                required
+                min={0}
+                max={50}
+                placeholder="5"
+                value={profile.yearsExperience || ""}
+                onChange={(e) =>
+                  setProfile({
+                    ...profile,
+                    yearsExperience: parseInt(e.target.value) || 0,
+                  })
+                }
+                className={inputClass}
+              />
+            </label>
 
             <label className="flex flex-col gap-1.5">
               <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
