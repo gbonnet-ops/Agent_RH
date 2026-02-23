@@ -33,6 +33,7 @@ class CandidateProfile:
     cv_text: str = ""  # CV complet en texte
     cover_letter_example: str = ""  # Exemple de cover letter pour le style
     years_experience: int = 0  # Années d'expérience professionnelle
+    personal_note: str = ""  # Note personnelle pour humaniser la lettre
 
 
 @dataclass
@@ -119,6 +120,19 @@ async def generate_cover_letter(
             f"{profile.cv_text}\n"
         )
 
+    # Construire le bloc note personnelle si fourni
+    personal_block = ""
+    if profile.personal_note:
+        personal_block = (
+            "\n\n## NOTE PERSONNELLE DU CANDIDAT\n"
+            "Voici des éléments personnels que le candidat souhaite voir "
+            "intégrés dans sa lettre de motivation. Utilise-les de manière "
+            "naturelle pour rendre la lettre authentique et humaine. "
+            "Intègre ces éléments là où ils sont pertinents par rapport "
+            "à l'offre ciblée :\n\n"
+            f"{profile.personal_note}\n"
+        )
+
     system = SystemMessage(content=(
         "Tu es un coach carrière senior spécialisé dans la rédaction de "
         "candidatures percutantes en français.\n\n"
@@ -146,6 +160,7 @@ async def generate_cover_letter(
         "Format : Commence par 'Madame, Monsieur,' et termine par 'Cordialement,'. "
         "Pas d'en-tête, pas de date, pas de signature."
         + example_block
+        + personal_block
     ))
     xp_block = (
         f"\n- Années d'expérience : {profile.years_experience} ans\n"

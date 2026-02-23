@@ -106,6 +106,7 @@ class GenerateRequest(BaseModel):
     linkedin_url: str = ""
     cv_text: str = ""
     cover_letter_example: str = ""
+    personal_note: str = ""
     years_experience: int = 0
     selected_offers: list[RawOffer]
     min_score: float = 0.0
@@ -142,6 +143,7 @@ class JobSearchRequest(BaseModel):
     linkedin_url: str = ""
     cv_text: str = ""
     cover_letter_example: str = ""
+    personal_note: str = ""
 
 
 class JobSearchResponse(BaseModel):
@@ -303,6 +305,7 @@ async def generate_documents(request: GenerateRequest) -> GenerateResponse:
         cv_text=request.cv_text,
         cover_letter_example=request.cover_letter_example,
         years_experience=request.years_experience,
+        personal_note=request.personal_note,
     )
 
     results: list[ProcessedOffer] = []

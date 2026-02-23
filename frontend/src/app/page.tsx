@@ -16,6 +16,7 @@ interface CandidateProfile {
   yearsExperience: number;
   cvText: string;
   coverLetterExample: string;
+  personalNote: string;
 }
 
 interface RawOffer {
@@ -124,6 +125,7 @@ export default function Home() {
     yearsExperience: 0,
     cvText: "",
     coverLetterExample: "",
+    personalNote: "",
   });
 
   // --- State: Sources ---
@@ -305,6 +307,7 @@ export default function Home() {
           linkedin_url: profile.linkedinUrl,
           cv_text: profile.cvText,
           cover_letter_example: profile.coverLetterExample,
+          personal_note: profile.personalNote,
           years_experience: profile.yearsExperience,
           selected_offers: selectedOffers,
           min_score: minScore,
@@ -596,6 +599,25 @@ export default function Home() {
                 }
                 className={inputClass}
               />
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                À propos de moi (touche personnelle)
+              </span>
+              <textarea
+                rows={4}
+                placeholder="Décrivez ce qui vous rend unique : passions, valeurs, anecdotes professionnelles, ce qui vous motive au quotidien..."
+                value={profile.personalNote}
+                onChange={(e) =>
+                  setProfile({ ...profile, personalNote: e.target.value })
+                }
+                className={inputClass}
+              />
+              <p className="text-xs text-zinc-400 dark:text-zinc-500">
+                Ces éléments personnels seront intégrés dans vos lettres de
+                motivation pour les rendre plus authentiques.
+              </p>
             </label>
 
             <button type="submit" disabled={searching} className={btnPrimary}>
