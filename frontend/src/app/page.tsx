@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, useEffect, useMemo, type FormEvent } from "react";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,31 +46,52 @@ interface GenerateResponse {
   results: ProcessedOffer[];
 }
 
-type TabId = "profil" | "sources" | "resultats";
-
 // ---------------------------------------------------------------------------
-// localStorage helpers for dismissed offers
+// History data model
 // ---------------------------------------------------------------------------
 
-const DISMISSED_KEY = "agent_rh_dismissed";
+interface HistoryEntry {
+  id: string; // URL or title__company
+  title: string;
+  company: string;
+  url: string;
+  status: "rejected" | "generated";
+  date: string; // ISO string
+  relevanceScore?: number;
+  searchQuery?: string;
+  location?: string;
+}
 
-function getDismissedUrls(): string[] {
+type HistoryFilter = "all" | "generated" | "rejected";
+type TabId = "profil" | "sources" | "resultats" | "historique";
+
+// ---------------------------------------------------------------------------
+// localStorage helpers
+// ---------------------------------------------------------------------------
+
+const HISTORY_KEY = "agent_rh_history";
+const CUSTOM_URLS_KEY = "agent_rh_custom_urls";
+
+function loadHistory(): HistoryEntry[] {
   if (typeof window === "undefined") return [];
   try {
-    return JSON.parse(localStorage.getItem(DISMISSED_KEY) || "[]");
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
   } catch {
     return [];
   }
 }
 
-function addDismissedUrls(urls: string[]) {
-  const existing = getDismissedUrls();
-  const updated = [...new Set([...existing, ...urls])];
-  localStorage.setItem(DISMISSED_KEY, JSON.stringify(updated));
+function saveHistory(entries: HistoryEntry[]) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
 }
 
-function clearDismissedUrls() {
-  localStorage.removeItem(DISMISSED_KEY);
+function loadCustomUrls(): string {
+  if (typeof window === "undefined") return "";
+  return localStorage.getItem(CUSTOM_URLS_KEY) || "";
+}
+
+function saveCustomUrls(urls: string) {
+  localStorage.setItem(CUSTOM_URLS_KEY, urls);
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +124,7 @@ export default function Home() {
     coverLetterExample: "",
   });
 
-  // --- State: Sources (custom company/headhunter URLs) ---
+  // --- State: Sources ---
   const [customUrls, setCustomUrls] = useState<string>("");
 
   // --- State: Tabs ---
@@ -119,7 +140,9 @@ export default function Home() {
 
   // --- State: Generation ---
   const [generating, setGenerating] = useState(false);
-  const [generatedResults, setGeneratedResults] = useState<ProcessedOffer[]>([]);
+  const [generatedResults, setGeneratedResults] = useState<ProcessedOffer[]>(
+    []
+  );
 
   // --- State: Feedback ---
   const [error, setError] = useState<string | null>(null);
@@ -128,15 +151,50 @@ export default function Home() {
   // --- State: Minimum score filter ---
   const [minScore, setMinScore] = useState(0.4);
 
-  // Load dismissed URLs on mount
-  const [dismissedUrls, setDismissedUrls] = useState<string[]>([]);
+  // --- State: History ---
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [historyFilter, setHistoryFilter] = useState<HistoryFilter>("all");
+
+  // Load persisted data on mount
   useEffect(() => {
-    setDismissedUrls(getDismissedUrls());
+    setHistory(loadHistory());
+    setCustomUrls(loadCustomUrls());
   }, []);
 
-  // Key for offer selection (use URL or fallback to title+company)
+  // Persist custom URLs when changed
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      saveCustomUrls(customUrls);
+    }
+  }, [customUrls]);
+
+  // Derive excluded URLs from history (both rejected + generated)
+  const excludedUrls = useMemo(
+    () => new Set(history.map((h) => h.id)),
+    [history]
+  );
+
+  // Key for offer selection
   function offerKey(offer: RawOffer): string {
     return offer.url || `${offer.title}__${offer.company}`;
+  }
+
+  // -----------------------------------------------------------------------
+  // History helpers
+  // -----------------------------------------------------------------------
+  function addToHistory(entries: HistoryEntry[]) {
+    setHistory((prev) => {
+      const existingIds = new Set(prev.map((h) => h.id));
+      const newEntries = entries.filter((e) => !existingIds.has(e.id));
+      const updated = [...newEntries, ...prev];
+      saveHistory(updated);
+      return updated;
+    });
+  }
+
+  function clearHistory() {
+    setHistory([]);
+    saveHistory([]);
   }
 
   // -----------------------------------------------------------------------
@@ -159,7 +217,7 @@ export default function Home() {
           job_title: profile.jobTitle,
           location: profile.location,
           max_results: 30,
-          dismissed_urls: dismissedUrls,
+          dismissed_urls: Array.from(excludedUrls),
         }),
       });
 
@@ -169,19 +227,26 @@ export default function Home() {
       }
 
       const data: SearchResponse = await res.json();
-      setOffers(data.offers);
+
+      // Client-side filter: remove any offers already in history
+      const freshOffers = data.offers.filter(
+        (o) => !excludedUrls.has(offerKey(o))
+      );
+
+      setOffers(freshOffers);
       setCountryDetected(data.country_detected);
 
       // Pre-select all offers
       const sel: Record<string, boolean> = {};
-      data.offers.forEach((o) => {
+      freshOffers.forEach((o) => {
         sel[offerKey(o)] = true;
       });
       setSelected(sel);
 
-      // Switch to results tab
       setActiveTab("resultats");
-      setSuccess(`${data.offers.length} offre(s) trouvée(s) (pays: ${data.country_detected.toUpperCase()})`);
+      setSuccess(
+        `${freshOffers.length} offre(s) trouvée(s) (pays: ${data.country_detected.toUpperCase()})`
+      );
       setTimeout(() => setSuccess(null), 4000);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur inconnue");
@@ -200,14 +265,22 @@ export default function Home() {
       return;
     }
 
-    // Remember dismissed offers
+    // Record dismissed (deselected) offers in history
     const dismissedOffers = offers.filter((o) => !selected[offerKey(o)]);
-    const newDismissedUrls = dismissedOffers
-      .map((o) => o.url)
-      .filter(Boolean);
-    if (newDismissedUrls.length > 0) {
-      addDismissedUrls(newDismissedUrls);
-      setDismissedUrls(getDismissedUrls());
+    if (dismissedOffers.length > 0) {
+      const now = new Date().toISOString();
+      addToHistory(
+        dismissedOffers.map((o) => ({
+          id: offerKey(o),
+          title: o.title,
+          company: o.company,
+          url: o.url,
+          status: "rejected" as const,
+          date: now,
+          searchQuery: profile.jobTitle,
+          location: profile.location,
+        }))
+      );
     }
 
     setGenerating(true);
@@ -242,6 +315,25 @@ export default function Home() {
 
       const data: GenerateResponse = await res.json();
       setGeneratedResults(data.results);
+
+      // Record generated offers in history
+      if (data.results.length > 0) {
+        const now = new Date().toISOString();
+        addToHistory(
+          data.results.map((r) => ({
+            id: r.url || `${r.title}__${r.company}`,
+            title: r.title,
+            company: r.company,
+            url: r.url,
+            status: "generated" as const,
+            date: now,
+            relevanceScore: r.relevance_score,
+            searchQuery: profile.jobTitle,
+            location: profile.location,
+          }))
+        );
+      }
+
       setSuccess(
         `${data.offers_count} lettre(s) de motivation générée(s) !`
       );
@@ -275,12 +367,30 @@ export default function Home() {
   const selectedCount = Object.values(selected).filter(Boolean).length;
 
   // -----------------------------------------------------------------------
+  // Filtered history
+  // -----------------------------------------------------------------------
+  const filteredHistory = useMemo(() => {
+    if (historyFilter === "all") return history;
+    return history.filter((h) => h.status === historyFilter);
+  }, [history, historyFilter]);
+
+  const generatedCount = history.filter((h) => h.status === "generated").length;
+  const rejectedCount = history.filter((h) => h.status === "rejected").length;
+
+  // -----------------------------------------------------------------------
   // Tabs
   // -----------------------------------------------------------------------
   const tabs: { id: TabId; label: string }[] = [
     { id: "profil", label: "Profil" },
     { id: "sources", label: "Sources" },
-    { id: "resultats", label: `Résultats${offers.length > 0 ? ` (${offers.length})` : ""}` },
+    {
+      id: "resultats",
+      label: `Résultats${offers.length > 0 ? ` (${offers.length})` : ""}`,
+    },
+    {
+      id: "historique",
+      label: `Historique${history.length > 0 ? ` (${history.length})` : ""}`,
+    },
   ];
 
   return (
@@ -290,7 +400,8 @@ export default function Home() {
           Agent RH
         </h1>
         <p className="mb-6 text-sm text-zinc-500 dark:text-zinc-400">
-          Recherche automatisée d&apos;emploi avec lettres de motivation personnalisées.
+          Recherche automatisée d&apos;emploi avec lettres de motivation
+          personnalisées.
         </p>
 
         {/* Tab navigation */}
@@ -323,7 +434,7 @@ export default function Home() {
         )}
 
         {/* ============================================================= */}
-        {/* TAB: Profil */}
+        {/* TAB: Profil                                                    */}
         {/* ============================================================= */}
         {activeTab === "profil" && (
           <form onSubmit={handleSearch} className="flex flex-col gap-5">
@@ -354,7 +465,10 @@ export default function Home() {
                   placeholder="jean@exemple.com"
                   value={profile.candidateEmail}
                   onChange={(e) =>
-                    setProfile({ ...profile, candidateEmail: e.target.value })
+                    setProfile({
+                      ...profile,
+                      candidateEmail: e.target.value,
+                    })
                   }
                   className={inputClass}
                 />
@@ -451,7 +565,10 @@ export default function Home() {
                 placeholder="Collez ici un exemple de cover letter dont vous aimez le style."
                 value={profile.coverLetterExample}
                 onChange={(e) =>
-                  setProfile({ ...profile, coverLetterExample: e.target.value })
+                  setProfile({
+                    ...profile,
+                    coverLetterExample: e.target.value,
+                  })
                 }
                 className={inputClass}
               />
@@ -464,7 +581,7 @@ export default function Home() {
         )}
 
         {/* ============================================================= */}
-        {/* TAB: Sources */}
+        {/* TAB: Sources                                                   */}
         {/* ============================================================= */}
         {activeTab === "sources" && (
           <div className="flex flex-col gap-5">
@@ -490,32 +607,11 @@ export default function Home() {
                 la recherche. (Fonctionnalité en cours de développement)
               </p>
             </div>
-
-            <div className="border-t border-zinc-200 pt-4 dark:border-zinc-700">
-              <h3 className="mb-2 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                Offres masquées
-              </h3>
-              <p className="mb-3 text-sm text-zinc-500 dark:text-zinc-400">
-                {dismissedUrls.length} offre(s) masquée(s) ne seront plus
-                proposées lors des prochaines recherches.
-              </p>
-              {dismissedUrls.length > 0 && (
-                <button
-                  onClick={() => {
-                    clearDismissedUrls();
-                    setDismissedUrls([]);
-                  }}
-                  className={btnSecondary}
-                >
-                  Réinitialiser les offres masquées
-                </button>
-              )}
-            </div>
           </div>
         )}
 
         {/* ============================================================= */}
-        {/* TAB: Résultats */}
+        {/* TAB: Résultats                                                 */}
         {/* ============================================================= */}
         {activeTab === "resultats" && (
           <div className="flex flex-col gap-5">
@@ -590,11 +686,11 @@ export default function Home() {
                         </div>
 
                         {/* Offer info */}
-                        <div className="flex-1 min-w-0">
-                          <p className="font-medium text-zinc-900 dark:text-zinc-100 truncate">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-medium text-zinc-900 dark:text-zinc-100">
                             {offer.title}
                           </p>
-                          <p className="text-sm text-zinc-500 dark:text-zinc-400 truncate">
+                          <p className="truncate text-sm text-zinc-500 dark:text-zinc-400">
                             {offer.company}
                           </p>
                         </div>
@@ -620,7 +716,9 @@ export default function Home() {
                 <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800">
                   <div className="flex items-center gap-4">
                     <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-                      <span className="whitespace-nowrap">Score minimum :</span>
+                      <span className="whitespace-nowrap">
+                        Score minimum :
+                      </span>
                       <input
                         type="range"
                         min={0}
@@ -704,6 +802,127 @@ export default function Home() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ============================================================= */}
+        {/* TAB: Historique                                                 */}
+        {/* ============================================================= */}
+        {activeTab === "historique" && (
+          <div className="flex flex-col gap-5">
+            {/* Filter buttons */}
+            <div className="flex items-center justify-between">
+              <div className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-800">
+                {(
+                  [
+                    { id: "all", label: `Tout (${history.length})` },
+                    { id: "generated", label: `Postulé (${generatedCount})` },
+                    { id: "rejected", label: `Rejeté (${rejectedCount})` },
+                  ] as const
+                ).map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setHistoryFilter(f.id)}
+                    className={`rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                      historyFilter === f.id
+                        ? "bg-white text-zinc-900 shadow-sm dark:bg-zinc-700 dark:text-zinc-100"
+                        : "text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {history.length > 0 && (
+                <button
+                  onClick={clearHistory}
+                  className="text-xs font-medium text-red-500 hover:text-red-400"
+                >
+                  Tout effacer
+                </button>
+              )}
+            </div>
+
+            {/* History list */}
+            {filteredHistory.length === 0 && (
+              <p className="text-center text-sm text-zinc-500 dark:text-zinc-400">
+                {history.length === 0
+                  ? "Aucun historique. Lancez une recherche pour commencer."
+                  : "Aucune offre dans cette catégorie."}
+              </p>
+            )}
+
+            <div className="flex flex-col gap-2">
+              {filteredHistory.map((entry, i) => (
+                <div
+                  key={i}
+                  className="flex items-center gap-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-800"
+                >
+                  {/* Status badge */}
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+                      entry.status === "generated"
+                        ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300"
+                        : "bg-zinc-200 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-400"
+                    }`}
+                  >
+                    {entry.status === "generated" ? "Postulé" : "Rejeté"}
+                  </span>
+
+                  {/* Offer info */}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                      {entry.title}
+                    </p>
+                    <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+                      {entry.company}
+                      {entry.searchQuery && (
+                        <span>
+                          {" "}
+                          &middot; Recherche : {entry.searchQuery}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+
+                  {/* Score (if generated) */}
+                  {entry.relevanceScore !== undefined && (
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                        entry.relevanceScore >= 0.7
+                          ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                          : entry.relevanceScore >= 0.4
+                          ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200"
+                          : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                      }`}
+                    >
+                      {Math.round(entry.relevanceScore * 100)}%
+                    </span>
+                  )}
+
+                  {/* Date */}
+                  <span className="shrink-0 text-xs text-zinc-400 dark:text-zinc-500">
+                    {new Date(entry.date).toLocaleDateString("fr-FR", {
+                      day: "numeric",
+                      month: "short",
+                    })}
+                  </span>
+
+                  {/* Link */}
+                  {entry.url && (
+                    <a
+                      href={entry.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="shrink-0 text-xs font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400"
+                    >
+                      Voir
+                    </a>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </main>
