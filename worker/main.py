@@ -1,7 +1,8 @@
 """Point d'entrée FastAPI pour l'Agent RH.
 
-Expose une route POST /trigger-job-search déclenchée par le Cron Vercel
-pour lancer le pipeline de recherche d'emploi automatisée.
+Expose deux routes principales :
+  POST /search-offers     → recherche d'offres (rapide, sans LLM)
+  POST /generate-documents → génère cover letters pour les offres sélectionnées
 """
 
 import logging
@@ -19,7 +20,7 @@ from agent_llm import CandidateProfile, process_offer
 from document_builder import fill_template, generate_cover_letter_docx
 from drive_client import list_files, read_text_file
 from notifier import notify_candidate
-from job_search_api import search_offers_adzuna
+from job_search_api import search_offers_adzuna, is_excluded_offer
 from scraper import JobOffer, search_offers
 
 load_dotenv()
@@ -27,7 +28,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("agent_rh")
 
-app = FastAPI(title="Agent RH Worker", version="0.1.0")
+app = FastAPI(title="Agent RH Worker", version="0.2.0")
 
 
 @app.on_event("startup")
@@ -66,11 +67,71 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# Modèles Pydantic pour les requêtes / réponses
+# Modèles Pydantic
 # ---------------------------------------------------------------------------
-class JobSearchRequest(BaseModel):
-    """Paramètres optionnels pour déclencher la recherche."""
 
+# --- Phase 1 : Recherche ---
+
+class SearchRequest(BaseModel):
+    """Paramètres pour la recherche d'offres."""
+    job_title: str = "Développeur Full-Stack Senior"
+    location: str = "Paris"
+    max_results: int = 30
+    dismissed_urls: list[str] = []  # URLs déjà refusées par l'utilisateur
+
+
+class RawOffer(BaseModel):
+    """Offre brute retournée par la recherche (avant traitement LLM)."""
+    title: str
+    company: str
+    url: str = ""
+    description: str = ""
+
+
+class SearchResponse(BaseModel):
+    """Réponse de la recherche d'offres."""
+    status: str
+    offers: list[RawOffer]
+    country_detected: str = "fr"
+
+
+# --- Phase 2 : Génération ---
+
+class GenerateRequest(BaseModel):
+    """Paramètres pour la génération de cover letters."""
+    candidate_name: str = "Jean Dupont"
+    candidate_email: str = "jean.dupont@example.com"
+    job_title: str = "Développeur Full-Stack Senior"
+    skills: list[str] = []
+    linkedin_url: str = ""
+    cv_text: str = ""
+    cover_letter_example: str = ""
+    selected_offers: list[RawOffer]
+    min_score: float = 0.0
+
+
+class ProcessedOffer(BaseModel):
+    """Résumé d'une offre traitée par le pipeline."""
+    title: str
+    company: str
+    url: str = ""
+    relevance_score: float
+    cover_letter_path: str
+    cv_path: str | None = None
+
+
+class GenerateResponse(BaseModel):
+    """Réponse de la génération de documents."""
+    status: str
+    processed_at: str
+    offers_count: int
+    results: list[ProcessedOffer]
+
+
+# --- Legacy (backward compat) ---
+
+class JobSearchRequest(BaseModel):
+    """Paramètres optionnels pour déclencher la recherche (legacy)."""
     job_title: str = "Développeur Full-Stack Senior"
     location: str = "Paris"
     candidate_name: str = "Jean Dupont"
@@ -81,25 +142,12 @@ class JobSearchRequest(BaseModel):
     cover_letter_example: str = ""
 
 
-class ProcessedOffer(BaseModel):
-    """Résumé d'une offre traitée par le pipeline."""
-
-    title: str
-    company: str
-    url: str = ""
-    relevance_score: float
-    cover_letter_path: str
-    cv_path: str | None = None
-
-
 class JobSearchResponse(BaseModel):
-    """Réponse du pipeline de recherche."""
-
+    """Réponse du pipeline de recherche (legacy)."""
     status: str
     processed_at: str
     offers_count: int
     results: list[ProcessedOffer]
-
 
 
 # ---------------------------------------------------------------------------
@@ -137,35 +185,35 @@ async def health() -> dict[str, str]:
     return {"status": "ok", "service": "agent-rh-worker"}
 
 
-@app.post("/trigger-job-search", response_model=JobSearchResponse)
-async def trigger_job_search(
-    request: JobSearchRequest | None = None,
-) -> JobSearchResponse:
-    """Déclenche le pipeline complet de recherche d'emploi.
+# ---------------------------------------------------------------------------
+# Phase 1 : Recherche d'offres (rapide, sans LLM)
+# ---------------------------------------------------------------------------
+@app.post("/search-offers", response_model=SearchResponse)
+async def search_offers_endpoint(request: SearchRequest) -> SearchResponse:
+    """Recherche des offres d'emploi.
 
-    Étapes orchestrées :
-    1. Récupérer les offres (mockées pour le moment).
-    2. Charger les achievements depuis Google Drive.
-    3. Pour chaque offre : analyser avec le LLM, générer la cover letter.
-    4. Envoyer le rapport par email via Resend.
-    5. Retourner le récapitulatif.
+    Retourne les offres brutes filtrées (sans stages/alternances,
+    sans les offres déjà refusées par l'utilisateur).
     """
-    if request is None:
-        request = JobSearchRequest()
-
     logger.info(
-        "Pipeline déclenché pour '%s' à '%s'",
+        "Recherche pour '%s' à '%s' (max=%d)",
         request.job_title,
         request.location,
+        request.max_results,
     )
 
-    # -- Étape 1 : récupérer les offres --
-    # Stratégie : Adzuna API d'abord (fiable), puis WttJ scraping en fallback
     offers: list[JobOffer] = []
+    from job_search_api import detect_country
+    country = detect_country(request.location)
 
-    # Tentative 1 : API Adzuna (rapide, pas de scraping)
+    # Tentative 1 : API Adzuna
     try:
-        offers = await search_offers_adzuna(request.job_title, request.location)
+        offers = await search_offers_adzuna(
+            request.job_title,
+            request.location,
+            max_results=request.max_results,
+            country=country,
+        )
         if offers:
             logger.info("%d offres trouvées via Adzuna API", len(offers))
     except Exception:
@@ -174,7 +222,11 @@ async def trigger_job_search(
     # Tentative 2 : scraping WttJ si Adzuna n'a rien trouvé
     if not offers:
         try:
-            offers = await search_offers(request.job_title, request.location)
+            offers = await search_offers(
+                request.job_title,
+                request.location,
+                max_results=request.max_results,
+            )
             logger.info("%d offres trouvées via scraping WttJ", len(offers))
         except Exception:
             logger.exception("Scraping WttJ échoué également")
@@ -189,9 +241,58 @@ async def trigger_job_search(
             ),
         )
 
-    # -- Étape 2 : charger le profil candidat --
+    # Filtrer les offres déjà refusées
+    dismissed = set(request.dismissed_urls)
+    raw_offers = [
+        RawOffer(
+            title=o.title,
+            company=o.company,
+            url=o.url,
+            description=o.description[:500],  # Résumé court pour le frontend
+        )
+        for o in offers
+        if o.url not in dismissed and not is_excluded_offer(o.title)
+    ]
+
+    logger.info("%d offres retournées après filtrage", len(raw_offers))
+
+    return SearchResponse(
+        status="ok",
+        offers=raw_offers,
+        country_detected=country,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 : Génération de documents pour les offres sélectionnées
+# ---------------------------------------------------------------------------
+@app.post("/generate-documents", response_model=GenerateResponse)
+async def generate_documents(request: GenerateRequest) -> GenerateResponse:
+    """Génère les cover letters et CV pour les offres sélectionnées.
+
+    Étapes :
+    1. Charger le profil candidat.
+    2. Pour chaque offre sélectionnée : analyser avec LLM + générer la cover letter.
+    3. Envoyer le rapport par email.
+    4. Retourner le récapitulatif.
+    """
+    if not request.selected_offers:
+        raise HTTPException(
+            status_code=400,
+            detail="Aucune offre sélectionnée.",
+        )
+
+    logger.info(
+        "Génération pour %d offres sélectionnées (candidat: %s)",
+        len(request.selected_offers),
+        request.candidate_name,
+    )
+
+    # Charger le profil candidat
     achievements = _load_achievements_from_drive()
-    skills = request.skills if request.skills else [s.strip() for s in request.job_title.split(",")]
+    skills = request.skills if request.skills else [
+        s.strip() for s in request.job_title.split(",")
+    ]
     candidate = CandidateProfile(
         job_title=request.job_title,
         skills=skills,
@@ -204,8 +305,17 @@ async def trigger_job_search(
     results: list[ProcessedOffer] = []
     generated_files: list[Path] = []
 
-    for i, offer in enumerate(offers):
-        # -- Étape 3 : analyse LLM --
+    for i, offer_data in enumerate(request.selected_offers):
+        # Convertir RawOffer → JobOffer pour le LLM
+        offer = JobOffer(
+            title=offer_data.title,
+            company=offer_data.company,
+            url=offer_data.url,
+            description=offer_data.description,
+            funnel_questions=[],
+        )
+
+        # Analyse LLM
         llm_output = None
         use_llm = bool(os.getenv("OPENAI_API_KEY"))
 
@@ -213,14 +323,18 @@ async def trigger_job_search(
             try:
                 llm_output = await process_offer(candidate, offer)
             except Exception:
-                logger.warning("Erreur LLM pour %s, fallback mock", offer.company, exc_info=True)
+                logger.warning(
+                    "Erreur LLM pour %s, fallback mock",
+                    offer.company,
+                    exc_info=True,
+                )
 
         if llm_output:
             score = llm_output.relevance_score
             cover_text = llm_output.cover_letter
         else:
             # Fallback mock
-            score = round(0.9 - i * 0.15, 2)
+            score = round(0.9 - i * 0.05, 2)
             cover_text = (
                 f"Madame, Monsieur,\n\n"
                 f"Votre offre de {offer.title} chez {offer.company} a retenu "
@@ -229,7 +343,15 @@ async def trigger_job_search(
                 f"Cordialement"
             )
 
-        # -- Étape 4 : générer la cover letter en .docx --
+        # Vérifier le score minimum
+        if score < request.min_score:
+            logger.info(
+                "Offre '%s' @ %s — score %.2f < seuil %.2f, ignorée",
+                offer.title, offer.company, score, request.min_score,
+            )
+            continue
+
+        # Générer la cover letter en .docx
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_company = offer.company.replace(" ", "_").lower()
         cl_filename = f"cover_letter_{safe_company}_{timestamp}_{i}.docx"
@@ -251,7 +373,7 @@ async def trigger_job_search(
                 detail=f"Erreur génération document pour {offer.company}",
             )
 
-        # -- Étape 5 : remplir le template CV si disponible --
+        # Remplir le template CV si disponible
         cv_path_str: str | None = None
         cv_template = OUTPUT_DIR / "cv_template.docx"
         if cv_template.exists():
@@ -284,8 +406,8 @@ async def trigger_job_search(
             ),
         )
 
-    # -- Étape 6 : envoyer le rapport par email --
-    if os.getenv("RESEND_API_KEY"):
+    # Envoyer le rapport par email
+    if os.getenv("RESEND_API_KEY") and results:
         offers_summary = [
             {"title": r.title, "company": r.company, "score": str(r.relevance_score)}
             for r in results
@@ -300,11 +422,51 @@ async def trigger_job_search(
         except Exception:
             logger.warning("Erreur envoi email", exc_info=True)
 
-    logger.info("Pipeline terminé : %d offres traitées", len(results))
+    logger.info("Génération terminée : %d offres traitées", len(results))
 
-    return JobSearchResponse(
+    return GenerateResponse(
         status="completed",
         processed_at=datetime.now().isoformat(),
         offers_count=len(results),
         results=results,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Legacy : pipeline complet en un seul appel (backward compat)
+# ---------------------------------------------------------------------------
+@app.post("/trigger-job-search", response_model=JobSearchResponse)
+async def trigger_job_search(
+    request: JobSearchRequest | None = None,
+) -> JobSearchResponse:
+    """Pipeline complet de recherche d'emploi (legacy, conservé pour compatibilité)."""
+    if request is None:
+        request = JobSearchRequest()
+
+    # Phase 1 : recherche
+    search_req = SearchRequest(
+        job_title=request.job_title,
+        location=request.location,
+        max_results=30,
+    )
+    search_result = await search_offers_endpoint(search_req)
+
+    # Phase 2 : génération pour toutes les offres trouvées
+    gen_req = GenerateRequest(
+        candidate_name=request.candidate_name,
+        candidate_email=request.candidate_email,
+        job_title=request.job_title,
+        skills=request.skills,
+        linkedin_url=request.linkedin_url,
+        cv_text=request.cv_text,
+        cover_letter_example=request.cover_letter_example,
+        selected_offers=search_result.offers,
+    )
+    gen_result = await generate_documents(gen_req)
+
+    return JobSearchResponse(
+        status=gen_result.status,
+        processed_at=gen_result.processed_at,
+        offers_count=gen_result.offers_count,
+        results=gen_result.results,
     )
