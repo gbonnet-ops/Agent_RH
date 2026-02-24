@@ -15,7 +15,6 @@ interface CandidateProfile {
   location: string;
   yearsExperience: number;
   cvText: string;
-  coverLetterExample: string;
   personalNote: string;
 }
 
@@ -124,7 +123,6 @@ export default function Home() {
     location: "Paris",
     yearsExperience: 0,
     cvText: "",
-    coverLetterExample: "",
     personalNote: "",
   });
 
@@ -306,7 +304,6 @@ export default function Home() {
             .filter(Boolean),
           linkedin_url: profile.linkedinUrl,
           cv_text: profile.cvText,
-          cover_letter_example: profile.coverLetterExample,
           personal_note: profile.personalNote,
           years_experience: profile.yearsExperience,
           selected_offers: selectedOffers,
@@ -578,24 +575,6 @@ export default function Home() {
                 value={profile.cvText}
                 onChange={(e) =>
                   setProfile({ ...profile, cvText: e.target.value })
-                }
-                className={inputClass}
-              />
-            </label>
-
-            <label className="flex flex-col gap-1.5">
-              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Exemple de lettre de motivation (pour le style)
-              </span>
-              <textarea
-                rows={6}
-                placeholder="Collez ici un exemple de cover letter dont vous aimez le style."
-                value={profile.coverLetterExample}
-                onChange={(e) =>
-                  setProfile({
-                    ...profile,
-                    coverLetterExample: e.target.value,
-                  })
                 }
                 className={inputClass}
               />
