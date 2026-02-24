@@ -115,6 +115,86 @@ def is_excluded_offer(title: str) -> bool:
     return any(kw in title_lower for kw in EXCLUDED_TITLE_KEYWORDS)
 
 
+# ---------------------------------------------------------------------------
+# Élargissement de la requête de recherche
+# ---------------------------------------------------------------------------
+
+# Synonymes de niveaux hiérarchiques (bidirectionnels)
+TITLE_SYNONYMS: list[set[str]] = [
+    {"head of", "vp", "vice president", "director", "directeur", "directrice"},
+    {"cfo", "chief financial officer", "head of finance", "vp finance", "directeur financier"},
+    {"cto", "chief technology officer", "head of engineering", "vp engineering", "directeur technique"},
+    {"coo", "chief operating officer", "head of operations", "vp operations", "directeur des opérations"},
+    {"cmo", "chief marketing officer", "head of marketing", "vp marketing", "directeur marketing"},
+    {"ceo", "chief executive officer", "managing director", "directeur général", "general manager"},
+    {"manager", "responsable", "lead", "team lead", "chef de"},
+    {"senior", "sr", "sr.", "principal", "staff"},
+    {"développeur", "developer", "engineer", "ingénieur", "dev"},
+    {"analyste", "analyst", "data analyst", "business analyst"},
+    {"consultant", "conseiller", "advisor"},
+    {"commercial", "sales", "business development", "account executive", "chargé d'affaires"},
+    {"product manager", "chef de produit", "product owner", "po"},
+    {"project manager", "chef de projet", "program manager"},
+    {"full-stack", "fullstack", "full stack"},
+    {"front-end", "frontend", "front end"},
+    {"back-end", "backend", "back end"},
+]
+
+# Mots non significatifs à ignorer lors de l'extraction des mots-clés
+STOP_WORDS = {
+    "de", "du", "des", "le", "la", "les", "un", "une", "et", "en", "au",
+    "aux", "à", "of", "the", "a", "an", "and", "in", "at", "for", "with",
+    "on", "is", "are", "to", "from", "by",
+}
+
+
+def expand_job_title(job_title: str) -> str:
+    """Élargit un intitulé de poste en ajoutant des variantes/synonymes.
+
+    Ex: "Head of Finance" → "Head of Finance OR VP Finance OR Director Finance OR CFO"
+    """
+    title_lower = job_title.lower().strip()
+
+    # Trouver les groupes de synonymes correspondants
+    matched_synonyms: list[str] = []
+    for group in TITLE_SYNONYMS:
+        for synonym in group:
+            if synonym in title_lower:
+                # Ajouter les autres synonymes du groupe
+                for alt in group:
+                    if alt != synonym and alt not in title_lower:
+                        matched_synonyms.append(alt)
+                break
+
+    if not matched_synonyms:
+        return job_title
+
+    # Extraire les mots-clés métier (pas les niveaux hiérarchiques)
+    # Ex: "Head of Finance" → "Finance"
+    all_level_words: set[str] = set()
+    for group in TITLE_SYNONYMS:
+        for synonym in group:
+            all_level_words.update(synonym.lower().split())
+
+    domain_words = [
+        w for w in job_title.split()
+        if w.lower() not in STOP_WORDS and w.lower() not in all_level_words
+    ]
+    domain = " ".join(domain_words) if domain_words else ""
+
+    # Construire la requête élargie
+    variants = [job_title]
+    for syn in matched_synonyms[:4]:  # Limiter à 4 variantes
+        if domain:
+            variants.append(f"{syn} {domain}")
+        else:
+            variants.append(syn)
+
+    expanded = " OR ".join(variants)
+    logger.info("Requête élargie : '%s' → '%s'", job_title, expanded)
+    return expanded
+
+
 async def search_offers_adzuna(
     job_title: str,
     location: str = "Paris",
@@ -145,17 +225,21 @@ async def search_offers_adzuna(
     if country is None:
         country = detect_country(location)
 
+    # Élargir la requête pour capturer des variantes du titre
+    expanded_title = expand_job_title(job_title)
+
     url = f"{ADZUNA_BASE_URL}/{country}/search/1"
     params = {
         "app_id": app_id,
         "app_key": app_key,
-        "what": job_title,
+        "what": expanded_title,
         "where": location,
         "results_per_page": max_results,
         "content-type": "application/json",
     }
 
-    logger.info("Recherche Adzuna : %s à %s (pays=%s)", job_title, location, country)
+    logger.info("Recherche Adzuna : '%s' (élargi: '%s') à %s (pays=%s)",
+                job_title, expanded_title, location, country)
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(url, params=params)

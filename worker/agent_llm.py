@@ -31,7 +31,6 @@ class CandidateProfile:
     linkedin_url: str
     achievements: str  # Texte brut lu depuis Google Drive
     cv_text: str = ""  # CV complet en texte
-    cover_letter_example: str = ""  # Exemple de cover letter pour le style
     years_experience: int = 0  # Années d'expérience professionnelle
     personal_note: str = ""  # Note personnelle pour humaniser la lettre
 
@@ -95,20 +94,11 @@ async def generate_cover_letter(
     profile: CandidateProfile,
     offer: JobOffer,
 ) -> str:
-    """Rédige une lettre de motivation personnalisée."""
-    llm = _get_llm()
+    """Rédige une lettre de motivation personnalisée.
 
-    # Construire le bloc exemple si fourni
-    example_block = ""
-    if profile.cover_letter_example:
-        example_block = (
-            "\n\n## EXEMPLE DE STYLE À REPRODUIRE\n"
-            "Voici une lettre de motivation du candidat qui montre son style "
-            "d'écriture. Tu DOIS reproduire ce ton, cette structure et ce "
-            "niveau de langue. Adapte le contenu à l'offre ciblée, mais "
-            "garde le même style :\n\n"
-            f"---\n{profile.cover_letter_example}\n---\n"
-        )
+    Se base sur le CV, la note personnelle et la description du poste.
+    """
+    llm = _get_llm()
 
     # Construire le bloc CV si fourni
     cv_block = ""
@@ -136,19 +126,24 @@ async def generate_cover_letter(
     system = SystemMessage(content=(
         "Tu es un coach carrière senior spécialisé dans la rédaction de "
         "candidatures percutantes en français.\n\n"
+        "Ta méthode : tu analyses en profondeur le CV du candidat, sa note "
+        "personnelle et la description du poste pour créer une lettre de "
+        "motivation sur-mesure qui fait le pont entre le parcours du candidat "
+        "et les besoins spécifiques de l'entreprise.\n\n"
         "Règles strictes :\n"
         "1. ACCROCHE (2 phrases max) : Mentionne le nom de l'entreprise et "
-        "pourquoi elle t'attire spécifiquement (culture, produit, mission). "
-        "Déduis-le de la description de poste.\n"
+        "pourquoi elle attire le candidat spécifiquement (culture, produit, "
+        "mission). Déduis-le de la description de poste.\n"
         "2. VALEUR AJOUTÉE (1-2 paragraphes) : Relie les expériences et "
         "compétences concrètes du CV aux besoins du poste. Cite des chiffres, "
-        "des projets réels, des résultats mesurables tirés du CV.\n"
+        "des projets réels, des résultats mesurables tirés du CV. Si la note "
+        "personnelle contient des éléments pertinents pour ce poste, "
+        "intègre-les naturellement.\n"
         "3. MOTIVATION (2-3 phrases) : Explique ce que le candidat apportera "
-        "à l'équipe, pas juste ce qu'il veut.\n"
+        "à l'équipe, pas juste ce qu'il veut. Utilise la note personnelle "
+        "pour donner de la profondeur humaine.\n"
         "4. CONCLUSION : Appel à l'action naturel.\n\n"
         "Style :\n"
-        "- Si un EXEMPLE DE STYLE est fourni, reproduis fidèlement le ton, "
-        "la structure et le niveau de langue de cet exemple.\n"
         "- Ton professionnel mais humain (pas de jargon creux type "
         "'fort de mon expérience', 'dynamique et motivé', "
         "'passionné', 'force de proposition')\n"
@@ -159,7 +154,6 @@ async def generate_cover_letter(
         "- Utilise des données concrètes du CV : noms d'entreprises, chiffres, projets\n\n"
         "Format : Commence par 'Madame, Monsieur,' et termine par 'Cordialement,'. "
         "Pas d'en-tête, pas de date, pas de signature."
-        + example_block
         + personal_block
     ))
     xp_block = (
