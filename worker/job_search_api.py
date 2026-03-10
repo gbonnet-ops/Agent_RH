@@ -148,10 +148,13 @@ STOP_WORDS = {
 }
 
 
-def expand_job_title(job_title: str) -> str:
-    """Élargit un intitulé de poste en ajoutant des variantes/synonymes.
+def expand_job_title(job_title: str) -> tuple[str, list[str]]:
+    """Extrait les mots-clés du domaine et les synonymes de niveau.
 
-    Ex: "Head of Finance" → "Head of Finance OR VP Finance OR Director Finance OR CFO"
+    Retourne (domain_keywords, synonym_keywords) pour construire une
+    requête Adzuna plus flexible.
+
+    Ex: "Head of Finance" → ("Finance", ["vp", "director", "cfo"])
     """
     title_lower = job_title.lower().strip()
 
@@ -160,14 +163,10 @@ def expand_job_title(job_title: str) -> str:
     for group in TITLE_SYNONYMS:
         for synonym in group:
             if synonym in title_lower:
-                # Ajouter les autres synonymes du groupe
                 for alt in group:
                     if alt != synonym and alt not in title_lower:
                         matched_synonyms.append(alt)
                 break
-
-    if not matched_synonyms:
-        return job_title
 
     # Extraire les mots-clés métier (pas les niveaux hiérarchiques)
     # Ex: "Head of Finance" → "Finance"
@@ -180,19 +179,42 @@ def expand_job_title(job_title: str) -> str:
         w for w in job_title.split()
         if w.lower() not in STOP_WORDS and w.lower() not in all_level_words
     ]
-    domain = " ".join(domain_words) if domain_words else ""
+    domain = " ".join(domain_words) if domain_words else job_title
 
-    # Construire la requête élargie
-    variants = [job_title]
-    for syn in matched_synonyms[:4]:  # Limiter à 4 variantes
-        if domain:
-            variants.append(f"{syn} {domain}")
-        else:
-            variants.append(syn)
+    logger.info(
+        "Expansion : '%s' → domaine='%s', synonymes=%s",
+        job_title, domain, matched_synonyms[:4],
+    )
+    return domain, matched_synonyms[:4]
 
-    expanded = " OR ".join(variants)
-    logger.info("Requête élargie : '%s' → '%s'", job_title, expanded)
-    return expanded
+
+async def _adzuna_search(
+    client: httpx.AsyncClient,
+    app_id: str,
+    app_key: str,
+    country: str,
+    location: str,
+    max_results: int,
+    what: str | None = None,
+    what_or: str | None = None,
+) -> list[dict]:
+    """Effectue une requête Adzuna et retourne les résultats bruts."""
+    url = f"{ADZUNA_BASE_URL}/{country}/search/1"
+    params: dict = {
+        "app_id": app_id,
+        "app_key": app_key,
+        "where": location,
+        "results_per_page": max_results,
+        "content-type": "application/json",
+    }
+    if what:
+        params["what"] = what
+    if what_or:
+        params["what_or"] = what_or
+
+    resp = await client.get(url, params=params)
+    resp.raise_for_status()
+    return resp.json().get("results", [])
 
 
 async def search_offers_adzuna(
@@ -225,29 +247,56 @@ async def search_offers_adzuna(
     if country is None:
         country = detect_country(location)
 
-    # Élargir la requête pour capturer des variantes du titre
-    expanded_title = expand_job_title(job_title)
+    domain, synonyms = expand_job_title(job_title)
 
-    url = f"{ADZUNA_BASE_URL}/{country}/search/1"
-    params = {
-        "app_id": app_id,
-        "app_key": app_key,
-        "what": expanded_title,
-        "where": location,
-        "results_per_page": max_results,
-        "content-type": "application/json",
-    }
+    logger.info(
+        "Recherche Adzuna : '%s' (domaine='%s') à %s (pays=%s)",
+        job_title, domain, location, country,
+    )
 
-    logger.info("Recherche Adzuna : '%s' (élargi: '%s') à %s (pays=%s)",
-                job_title, expanded_title, location, country)
+    seen_urls: set[str] = set()
+    results: list[dict] = []
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+        # Recherche 1 : titre exact (résultats les plus pertinents)
+        try:
+            exact = await _adzuna_search(
+                client, app_id, app_key, country, location,
+                max_results=max_results,
+                what=job_title,
+            )
+            for item in exact:
+                url_key = item.get("redirect_url", "")
+                if url_key not in seen_urls:
+                    seen_urls.add(url_key)
+                    results.append(item)
+            logger.info("Adzuna exact : %d résultats", len(exact))
+        except Exception:
+            logger.warning("Recherche exacte échouée", exc_info=True)
 
-    results = data.get("results", [])
-    logger.info("Adzuna : %d résultats bruts", len(results))
+        # Recherche 2 : mots-clés du domaine + synonymes (plus large)
+        if len(results) < max_results and synonyms:
+            try:
+                # what_or cherche les offres contenant AU MOINS UN des mots
+                broader_keywords = f"{domain} {' '.join(synonyms)}"
+                broader = await _adzuna_search(
+                    client, app_id, app_key, country, location,
+                    max_results=max_results,
+                    what_or=broader_keywords,
+                )
+                for item in broader:
+                    url_key = item.get("redirect_url", "")
+                    if url_key not in seen_urls:
+                        seen_urls.add(url_key)
+                        results.append(item)
+                logger.info(
+                    "Adzuna élargie : %d nouveaux résultats (total: %d)",
+                    len(broader), len(results),
+                )
+            except Exception:
+                logger.warning("Recherche élargie échouée", exc_info=True)
+
+    logger.info("Adzuna : %d résultats bruts combinés", len(results))
 
     offers: list[JobOffer] = []
     for item in results:
